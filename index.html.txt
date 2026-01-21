@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>Creative Coding</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <style>
+    body {
+      margin: 0;
+      height: 100vh;
+      background: #0b0b0f;
+      color: white;
+      display: grid;
+      place-items: center;
+      font-family: system-ui, sans-serif;
+    }
+    .card {
+      padding: 32px;
+      border-radius: 16px;
+      background: rgba(255,255,255,0.06);
+      border: 1px solid rgba(255,255,255,0.15);
+      max-width: 720px;
+    }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <h1>Creative Coding – Week 1</h1>
+    <p>GitHub Pages is working 🎉</p>
+  </div>
+</body>
+</html>
