@@ -1,12 +1,13 @@
 {
-  "name": "kunda-liu-webservice",
+  "name": "out-of-scale-audio-particles",
   "version": "1.0.0",
-  "main": "app.js",
   "type": "module",
+  "main": "app.js",
   "scripts": {
     "start": "node app.js"
   },
   "dependencies": {
-    "express": "^4.18.2"
+    "express": "^4.18.2",
+    "socket.io": "^4.7.5"
   }
 }
