@@ -2,25 +2,31 @@
 <html lang="en">
   <head>
     <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
-    <title>Out of Scale – Audio Particle Field</title>
+    <title>Out of Scale — Networked Audio Particles</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no" />
 
     <link rel="stylesheet" href="style.css" />
 
-    <script src="https://cdn.jsdelivr.net/npm/p5@1.11.11/lib/p5.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/p5@1.11.11/lib/p5.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/p5@1.11.11/lib/addons/p5.sound.min.js"></script>
     <script src="/socket.io/socket.io.js"></script>
   </head>
 
   <body>
-    <main id="app"></main>
-    <div id="ui">
-      <div class="title">Out of Scale – Audio Particle Field</div>
+    <div id="hud">
+      <div class="title">OUT OF SCALE — NETWORKED AUDIO PARTICLES</div>
       <div class="hint">
-        Click / Tap to start audio. Shake phone to inject energy. Tilt to steer.
+        Tap Start Audio, then Enable Sensors on phone. Shake to inject energy, tilt to steer.
+        Desktop click/drag also injects energy. Brightness follows sound and shared energy.
       </div>
-      <button id="btn-audio">Start Audio</button>
-      <button id="btn-sensors">Enable Sensors</button>
+
+      <div class="row">
+        <button id="btnAudio">Start Audio</button>
+        <button id="btnSensors">Enable Sensors</button>
+        <button id="btnClear">Clear</button>
+      </div>
+
+      <div class="status" id="status">booting…</div>
     </div>
 
     <script src="sketch.js"></script>

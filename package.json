@@ -1,5 +1,5 @@
 {
-  "name": "out-of-scale-audio-particles",
+  "name": "networked-audio-particles",
   "version": "1.0.0",
   "type": "module",
   "main": "app.js",

@@ -16,12 +16,12 @@ app.use(express.static("public"));
 io.on("connection", (socket) => {
   console.log("Client connected:", socket.id);
 
-  socket.on("pulse", (data) => {
-    io.emit("pulse", data);
-  });
-
   socket.on("sensor", (data) => {
     io.emit("sensor", data);
+  });
+
+  socket.on("pulse", (data) => {
+    io.emit("pulse", data);
   });
 
   socket.on("disconnect", () => {

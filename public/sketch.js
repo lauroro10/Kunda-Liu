@@ -1,333 +1,299 @@
 let socket;
-
-let audioReady = false;
-let oscLow, oscHigh, noise;
-let envLow, envHigh;
-let filterLP;
-let amp;
-let fft;
+let statusEl;
 
 let particles = [];
-let flow = { x: 0, y: 0, energy: 0 };
-let remoteEnergy = 0;
+const COUNT = 1600;
+
+let targetEnergy = 0.08;
+let energy = 0.08;
+
+let steerX = 0;
+let steerY = 0;
+
+let lastSensorAt = 0;
 let lastPulseAt = 0;
 
-const N_PARTICLES = 1400;
+// audio
+let audioReady = false;
+let carrier, pinkNoise, lp, env, amp;
 
 function setup() {
   createCanvas(windowWidth, windowHeight);
   pixelDensity(1);
   background(0);
 
-  socket = io();
+  statusEl = document.getElementById("status");
 
-  socket.on("pulse", (data) => {
-    if (!data) return;
-    remoteEnergy = max(remoteEnergy, data.energy || 0);
-    flow.x = lerp(flow.x, data.fx || 0, 0.25);
-    flow.y = lerp(flow.y, data.fy || 0, 0.25);
-    lastPulseAt = millis();
-  });
-
-  socket.on("sensor", (data) => {
-    if (!data) return;
-    flow.x = lerp(flow.x, data.fx || 0, 0.35);
-    flow.y = lerp(flow.y, data.fy || 0, 0.35);
-    flow.energy = max(flow.energy, data.energy || 0);
-  });
-
-  for (let i = 0; i < N_PARTICLES; i++) {
-    particles.push(new Particle());
-  }
-
-  const btnAudio = document.getElementById("btn-audio");
-  const btnSensors = document.getElementById("btn-sensors");
-
-  btnAudio.addEventListener("click", () => {
-    initAudio();
-    injectEnergy(0.9);
-  });
-
-  btnSensors.addEventListener("click", async () => {
-    await enableSensors();
-  });
+  initParticles();
+  setupSocket();
+  setupUI();
 }
 
 function draw() {
-  // trails
+  // smooth energy + decay
+  targetEnergy *= 0.985;
+  targetEnergy = max(targetEnergy, 0.05);
+  energy = lerp(energy, targetEnergy, 0.12);
+
+  const level = audioReady ? amp.getLevel() : 0;
+  const bright = constrain(map(level, 0, 0.25, 0.2, 1.0), 0.2, 1.0);
+
+  // louder -> less fade -> brighter trails
+  const fade = lerp(30, 10, bright);
   noStroke();
-  fill(0, 18);
+  fill(0, fade);
   rect(0, 0, width, height);
 
-  // audio-driven forces
-  const a = audioReady ? amp.getLevel() : 0;
-  const spectrum = audioReady ? fft.analyze() : null;
+  const speed = (0.6 + energy * 3.6) * (0.7 + bright);
+  const alphaBase = 18 + bright * 90 + energy * 70;
 
-  let bass = 0;
-  let air = 0;
-  if (spectrum) {
-    bass = fft.getEnergy("bass") / 255;
-    air = fft.getEnergy("highMid") / 255;
-  }
-
-  // decay remote energy
-  remoteEnergy *= 0.93;
-
-  // combine local + remote energy
-  const energy = constrain(flow.energy + remoteEnergy + a * 1.2, 0, 1);
-
-  // steer with flow + audio
-  const fx = flow.x * (0.6 + bass * 0.8);
-  const fy = flow.y * (0.6 + bass * 0.8);
-
-  // subtle attractor that shifts with high frequencies
-  const cx = width * 0.5 + sin(frameCount * 0.01) * width * 0.12 * (0.2 + air);
-  const cy = height * 0.5 + cos(frameCount * 0.012) * height * 0.12 * (0.2 + air);
+  // flow
+  const t = frameCount * 0.002;
+  blendMode(ADD);
 
   for (let i = 0; i < particles.length; i++) {
-    particles[i].step(energy, fx, fy, cx, cy, bass, air);
-    particles[i].draw(energy, bass, air);
+    const p = particles[i];
+
+    const n = noise(p.x * 0.0022, p.y * 0.0022, t);
+    const a = n * TWO_PI * 2.0;
+
+    const fx = cos(a) + steerX * 1.25;
+    const fy = sin(a) + steerY * 1.25;
+
+    const px = p.x;
+    const py = p.y;
+
+    p.vx = lerp(p.vx, fx, 0.09);
+    p.vy = lerp(p.vy, fy, 0.09);
+
+    p.x += p.vx * speed;
+    p.y += p.vy * speed;
+
+    if (p.x < -20) p.x = width + 20;
+    if (p.x > width + 20) p.x = -20;
+    if (p.y < -20) p.y = height + 20;
+    if (p.y > height + 20) p.y = -20;
+
+    const a2 = alphaBase * p.w;
+    stroke(200, 220, 255, a2);
+    strokeWeight(1.0 + p.w * 1.4);
+    line(px, py, p.x, p.y);
   }
 
-  // automatically keep sound alive with tiny pulses
-  if (audioReady) {
-    if (millis() - lastPulseAt > 1200 && random() < 0.02) {
-      triggerPulse(0.15 + energy * 0.25);
-    }
+  blendMode(BLEND);
+
+  // status text
+  const sock = socket ? (socket.connected ? "connected" : "connecting") : "missing";
+  const sensorState = (millis() - lastSensorAt < 1500) ? "live" : "idle";
+  statusEl.textContent = `socket: ${sock} • energy: ${energy.toFixed(2)} • audio: ${audioReady ? "on" : "off"} • sensor: ${sensorState}`;
+
+  // keep audio responsive
+  if (audioReady && random() < 0.01 * (0.3 + energy)) {
+    triggerSound(0.12 + energy * 0.25);
   }
-}
-
-function mousePressed() {
-  initAudio();
-  const strength = 0.35 + (mouseIsPressed ? 0.25 : 0);
-  triggerPulse(strength);
-  injectEnergy(0.55);
-
-  // broadcast
-  socket.emit("pulse", {
-    energy: constrain(strength, 0, 1),
-    fx: flow.x,
-    fy: flow.y,
-    t: Date.now(),
-  });
-}
-
-function touchStarted() {
-  initAudio();
-  triggerPulse(0.35);
-  injectEnergy(0.6);
-
-  socket.emit("pulse", {
-    energy: 0.35,
-    fx: flow.x,
-    fy: flow.y,
-    t: Date.now(),
-  });
-
-  return false;
-}
-
-function initAudio() {
-  if (audioReady) return;
-
-  userStartAudio();
-
-  oscLow = new p5.Oscillator("sine");
-  oscHigh = new p5.Oscillator("triangle");
-  noise = new p5.Noise("pink");
-
-  envLow = new p5.Envelope();
-  envLow.setADSR(0.001, 0.14, 0.0, 0.24);
-  envLow.setRange(0.9, 0);
-
-  envHigh = new p5.Envelope();
-  envHigh.setADSR(0.001, 0.05, 0.0, 0.11);
-  envHigh.setRange(0.25, 0);
-
-  filterLP = new p5.LowPass();
-  filterLP.freq(900);
-  filterLP.res(14);
-
-  oscLow.disconnect();
-  oscHigh.disconnect();
-  noise.disconnect();
-
-  oscLow.connect(filterLP);
-  oscHigh.connect(filterLP);
-  noise.connect(filterLP);
-
-  filterLP.connect();
-
-  oscLow.start();
-  oscHigh.start();
-  noise.start();
-
-  amp = new p5.Amplitude();
-  amp.setInput(filterLP);
-
-  fft = new p5.FFT(0.85, 1024);
-  fft.setInput(filterLP);
-
-  audioReady = true;
-}
-
-function triggerPulse(strength = 0.35) {
-  if (!audioReady) initAudio();
-
-  const s = constrain(strength, 0, 1);
-
-  const lowFreq = lerp(45, 130, s);
-  const highFreq = lerp(800, 2600, s);
-  const cutoff = lerp(450, 1700, s);
-
-  oscLow.freq(lowFreq);
-  oscHigh.freq(highFreq);
-  filterLP.freq(cutoff);
-
-  // noise breath
-  noise.amp(lerp(0.02, 0.10, s), 0.01);
-
-  envLow.play(oscLow, 0, 0.16 + s * 0.12);
-  envHigh.play(oscHigh, 0, 0.07 + s * 0.05);
-}
-
-function injectEnergy(amount) {
-  flow.energy = constrain(flow.energy + amount, 0, 1);
-}
-
-async function enableSensors() {
-  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
-    const p = await DeviceMotionEvent.requestPermission();
-    if (p !== "granted") return;
-  }
-
-  window.addEventListener("devicemotion", (e) => {
-    const ax = (e.accelerationIncludingGravity && e.accelerationIncludingGravity.x) || 0;
-    const ay = (e.accelerationIncludingGravity && e.accelerationIncludingGravity.y) || 0;
-    const az = (e.accelerationIncludingGravity && e.accelerationIncludingGravity.z) || 0;
-
-    const mag = Math.min(30, Math.sqrt(ax * ax + ay * ay + az * az)) / 30;
-
-    // map to flow direction
-    flow.x = lerp(flow.x, constrain(ax / 12, -1, 1), 0.25);
-    flow.y = lerp(flow.y, constrain(ay / 12, -1, 1), 0.25);
-
-    if (mag > 0.18) {
-      initAudio();
-      triggerPulse(constrain(mag, 0, 1));
-      injectEnergy(mag);
-    }
-
-    socket.emit("sensor", {
-      fx: flow.x,
-      fy: flow.y,
-      energy: constrain(mag, 0, 1),
-      t: Date.now(),
-    });
-  });
-
-  window.addEventListener("deviceorientation", (e) => {
-    const beta = e.beta || 0;
-    const gamma = e.gamma || 0;
-
-    const nx = constrain(gamma / 45, -1, 1);
-    const ny = constrain(beta / 45, -1, 1);
-
-    flow.x = lerp(flow.x, nx, 0.15);
-    flow.y = lerp(flow.y, ny, 0.15);
-
-    socket.emit("sensor", {
-      fx: flow.x,
-      fy: flow.y,
-      energy: 0,
-      t: Date.now(),
-    });
-  });
-}
-
-class Particle {
-  constructor() {
-    this.reset(true);
-  }
-
-  reset(initial = false) {
-    this.x = random(width);
-    this.y = random(height);
-    this.vx = random(-0.2, 0.2);
-    this.vy = random(-0.2, 0.2);
-    this.seed = random(1000);
-    this.life = initial ? random(30, 180) : random(60, 260);
-    this.size = random(0.6, 2.2);
-  }
-
-  step(energy, fx, fy, cx, cy, bass, air) {
-    this.life -= 1;
-    if (this.life <= 0) this.reset(false);
-
-    // flow field from noise
-    const n = noise2D(
-      this.x * 0.0025,
-      this.y * 0.0025,
-      this.seed + frameCount * 0.002
-    );
-
-    const angle = n * TWO_PI * (0.9 + air * 0.7);
-    const flowX = cos(angle);
-    const flowY = sin(angle);
-
-    // attraction to center (scale pressure)
-    const dx = cx - this.x;
-    const dy = cy - this.y;
-    const dist = Math.sqrt(dx * dx + dy * dy) + 0.0001;
-    const ax = (dx / dist) * (0.06 + bass * 0.10) * energy;
-    const ay = (dy / dist) * (0.06 + bass * 0.10) * energy;
-
-    const push = 0.22 + energy * 0.9;
-
-    this.vx += (flowX * push + fx * 0.7) * 0.12 + ax;
-    this.vy += (flowY * push + fy * 0.7) * 0.12 + ay;
-
-    // damping
-    this.vx *= 0.94;
-    this.vy *= 0.94;
-
-    this.x += this.vx;
-    this.y += this.vy;
-
-    // wrap
-    if (this.x < -10) this.x = width + 10;
-    if (this.x > width + 10) this.x = -10;
-    if (this.y < -10) this.y = height + 10;
-    if (this.y > height + 10) this.y = -10;
-  }
-
-  draw(energy, bass, air) {
-    const glow = 20 + energy * 180;
-    const alpha = 18 + energy * 70;
-
-    // color is derived from bass/air (no explicit RGB naming)
-    const h = (200 + air * 90 - bass * 40) % 360;
-    colorMode(HSL, 360, 100, 100, 100);
-    fill(h, 80, 60 + bass * 20, alpha);
-
-    const s = this.size * (0.8 + energy * 2.2);
-    circle(this.x, this.y, s);
-
-    // occasional spark
-    if (random() < 0.002 + air * 0.004) {
-      fill(h, 95, 85, min(90, glow));
-      circle(this.x, this.y, s * 3.2);
-    }
-    colorMode(RGB, 255, 255, 255, 255);
-  }
-}
-
-// simple noise helper
-function noise2D(x, y, z) {
-  return (noise(x, y, z) * 2 - 1);
 }
 
 function windowResized() {
   resizeCanvas(windowWidth, windowHeight);
+  initParticles();
   background(0);
+}
+
+function initParticles() {
+  particles = [];
+  for (let i = 0; i < COUNT; i++) {
+    particles.push({
+      x: random(width),
+      y: random(height),
+      vx: random(-0.2, 0.2),
+      vy: random(-0.2, 0.2),
+      w: random(0.35, 1.0),
+    });
+  }
+}
+
+function setupSocket() {
+  socket = io();
+
+  socket.on("sensor", (data) => {
+    if (!data) return;
+    lastSensorAt = millis();
+
+    if (typeof data.tx === "number" && typeof data.ty === "number") {
+      steerX = lerp(steerX, data.tx, 0.18);
+      steerY = lerp(steerY, data.ty, 0.18);
+    }
+
+    if (typeof data.shake === "number") {
+      const inj = constrain(data.shake, 0, 1.6);
+      bumpEnergy(inj * 0.55);
+
+      if (audioReady && millis() - lastPulseAt > 70) {
+        lastPulseAt = millis();
+        triggerSound(0.12 + inj * 0.35);
+      }
+    }
+  });
+
+  socket.on("pulse", (data) => {
+    if (!data) return;
+
+    const p = constrain(data.p || 0.4, 0, 1.6);
+    bumpEnergy(p * 0.5);
+
+    if (audioReady && millis() - lastPulseAt > 70) {
+      lastPulseAt = millis();
+      triggerSound(0.12 + p * 0.35);
+    }
+  });
+}
+
+function setupUI() {
+  const btnAudio = document.getElementById("btnAudio");
+  const btnSensors = document.getElementById("btnSensors");
+  const btnClear = document.getElementById("btnClear");
+
+  btnAudio.addEventListener("click", async () => {
+    await startAudio();
+    btnAudio.disabled = true;
+  });
+
+  btnSensors.addEventListener("click", async () => {
+    await enableSensors();
+    btnSensors.disabled = true;
+  });
+
+  btnClear.addEventListener("click", () => {
+    background(0);
+    targetEnergy = 0.08;
+    energy = 0.08;
+  });
+
+  // desktop inject energy
+  window.addEventListener("pointerdown", async () => {
+    if (!audioReady) await startAudio();
+    socketEmitPulse(0.65);
+  }, { passive: true });
+
+  window.addEventListener("pointermove", (e) => {
+    if (e.buttons !== 1) return;
+    socketEmitPulse(0.22);
+  }, { passive: true });
+}
+
+function socketEmitPulse(p) {
+  bumpEnergy(p * 0.5);
+  if (audioReady) triggerSound(0.16 + p * 0.25);
+  if (socket && socket.connected) {
+    socket.emit("pulse", { p, t: Date.now() });
+  }
+}
+
+function bumpEnergy(v) {
+  targetEnergy += v;
+  targetEnergy = constrain(targetEnergy, 0.05, 1.6);
+}
+
+// ---------------- Audio ----------------
+async function startAudio() {
+  if (audioReady) return;
+
+  await userStartAudio();
+
+  carrier = new p5.Oscillator("sine");
+  pinkNoise = new p5.Noise("pink");
+
+  env = new p5.Envelope();
+  env.setADSR(0.005, 0.12, 0.0, 0.18);
+  env.setRange(0.9, 0);
+
+  lp = new p5.LowPass();
+  lp.freq(1200);
+  lp.res(10);
+
+  carrier.disconnect();
+  pinkNoise.disconnect();
+
+  carrier.connect(lp);
+  pinkNoise.connect(lp);
+
+  lp.connect();
+
+  carrier.start();
+  pinkNoise.start();
+
+  carrier.amp(0.02, 0.2);
+  pinkNoise.amp(0.012, 0.2);
+
+  amp = new p5.Amplitude();
+  amp.setInput(lp);
+
+  audioReady = true;
+}
+
+function triggerSound(strength) {
+  if (!audioReady) return;
+
+  const s = constrain(strength, 0, 1);
+
+  const base = lerp(70, 230, s) + energy * 50;
+  const cut = lerp(550, 2900, s) + energy * 800;
+
+  carrier.freq(base);
+  lp.freq(cut, 0.03);
+
+  env.play(carrier, 0, 0.03);
+}
+
+// ---------------- Sensors (phone) ----------------
+async function enableSensors() {
+  if (typeof DeviceMotionEvent !== "undefined" && typeof DeviceMotionEvent.requestPermission === "function") {
+    const r = await DeviceMotionEvent.requestPermission();
+    if (r !== "granted") return;
+  }
+
+  if (typeof DeviceOrientationEvent !== "undefined" && typeof DeviceOrientationEvent.requestPermission === "function") {
+    const r2 = await DeviceOrientationEvent.requestPermission();
+    if (r2 !== "granted") return;
+  }
+
+  window.addEventListener("devicemotion", onMotion, { passive: true });
+  window.addEventListener("deviceorientation", onOrientation, { passive: true });
+}
+
+let lastSend = 0;
+let tilt = { tx: 0, ty: 0 };
+
+function onMotion(e) {
+  const now = Date.now();
+  if (now - lastSend < 50) return;
+  lastSend = now;
+
+  const a = e.accelerationIncludingGravity || e.acceleration;
+  if (!a) return;
+
+  const x = a.x || 0;
+  const y = a.y || 0;
+  const z = a.z || 0;
+
+  const mag = Math.sqrt(x * x + y * y + z * z);
+
+  const shake = constrain((mag - 12) / 14, 0, 1.6);
+
+  if (socket && socket.connected) {
+    socket.emit("sensor", {
+      shake,
+      tx: tilt.tx,
+      ty: tilt.ty,
+      t: now
+    });
+  }
+}
+
+function onOrientation(e) {
+  const beta = (typeof e.beta === "number") ? e.beta : 0;
+  const gamma = (typeof e.gamma === "number") ? e.gamma : 0;
+
+  tilt.tx = constrain(gamma / 35, -1, 1);
+  tilt.ty = constrain(beta / 35, -1, 1);
 }
